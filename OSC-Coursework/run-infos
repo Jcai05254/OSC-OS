@@ -1,0 +1,60 @@
+#!/usr/bin/make -f
+
+.PHONY: default serial x11 serial-gdb x11-gdb
+
+SHARED ?= /shared/5CCS2OSC
+INFOS_USER ?= ~/infos-user
+INFOS ?= ~/infos
+
+default: serial
+
+ROOTFS ?= $(INFOS_USER)/bin/rootfs.tar
+KERNEL ?= $(INFOS)/out/infos-kernel
+
+QEMU ?= qemu-system-x86_64
+
+# this defaults to the current tty; we fill it in in the shell command
+DEBUGCON_TTY ?= 
+export DEBUGCON_TTY
+
+KERNEL_CMDLINE_EXTRA ?=
+KERNEL_CMDLINE ?= boot-device=ata0 init=/usr/init pgalloc.debug=0 pgalloc.algorithm=simple \
+ objalloc.debug=0 sched.debug=0 sched.algorithm=cfs $(KERNEL_CMDLINE_EXTRA)
+
+$(INFOS_USER)/bin/rootfs.tar:
+	$(MAKE) -C $(INFOS_USER)
+$(INFOS)/out/infos-kernel:
+	$(MAKE) -C $(INFOS)
+
+MACHINE ?= -m 6G -hda $(ROOTFS) -kernel $(KERNEL)
+
+# Borrow xv6's approach to gdbing... some MIT code folows
+# try to generate a unique GDB port
+GDBPORT := $(shell expr `id -u` % 5000 + 25000)
+# QEMU's gdb stub command line changed in 0.11
+QEMUGDB := -gdb tcp::$(GDBPORT)
+
+.gdbinit: .gdbinit.tmpl
+	sed "s/localhost:1234/localhost:$(GDBPORT)/" < $^ > $@
+vpath .gdbinit.tmpl $(SHARED)
+
+# we should always run with the monitor on stdio, so that 'Ctrl+A X' works
+serial: $(KERNEL) $(ROOTFS)
+	$(QEMU) $(QEMU_EXTRA_OPTS) $(MACHINE) \
+-serial mon:stdio -nographic  -debugcon file:$${DEBUGCON_TTY:-`tty`} \
+-append "$(KERNEL_CMDLINE) tty0=serial syslog=qemu"
+
+serial-gdb: $(KERNEL) $(ROOTFS) .gdbinit
+	@echo "*** About to run qemu. To debug, run 'gdb', in a separate terminal, *from this directory* (`pwd`)." 1>&2
+	@sleep 5
+	$(MAKE) -f$(lastword $(MAKEFILE_LIST)) QEMU_EXTRA_OPTS='$(QEMUGDB)' --no-print-directory serial
+
+x11: $(KERNEL) $(ROOTFS)
+	$(QEMU) $(QEMU_EXTRA_OPTS) $(MACHINE) \
+-debugcon mon:file:"$${DEBUGCON_TTY:-`tty`}" \
+-append "$(KERNEL_CMDLINE) syslog=qemu"
+
+x11-gdb: $(KERNEL) $(ROOTFS) .gdbinit
+	@echo "*** About to run qemu. To debug, run 'gdb', in a separate terminal, *from this directory* (`pwd`)." 1>&2
+	@sleep 5
+	$(MAKE) -f$(lastword $(MAKEFILE_LIST)) QEMU_EXTRA_OPTS='$(QEMUGDB)' --no-print-directory x11
